@@ -83,6 +83,11 @@ options:
   mbus_tab_visible: false
   mbus_enabled: false
   mbus_device: ""
+  mbus_transport: "serial"
+  mbus_esphome_host: ""
+  mbus_esphome_port: 6053
+  mbus_esphome_key: ""
+  mbus_esphome_proxy: "M-Bus Master"
   # Serial number of the device the user picked, stored so a /dev node reused
   # by different hardware is detected instead of silently polled.
   mbus_device_serial: ""
@@ -126,7 +131,12 @@ schema:
   qds_walkby_enabled: bool
   mbus_tab_visible: bool
   mbus_enabled: bool
+  mbus_transport: list(serial|esphome)
   mbus_device: str?
+  mbus_esphome_host: str?
+  mbus_esphome_port: int
+  mbus_esphome_key: str?
+  mbus_esphome_proxy: str
   mbus_device_serial: str?
   mbus_bus_alias: str
   mbus_baudrate: list(300|600|1200|2400|4800|9600)

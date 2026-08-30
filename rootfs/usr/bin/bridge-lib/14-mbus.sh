@@ -29,6 +29,8 @@ MBUS_METER_DIR=""
 MBUS_CONF_FILE=""
 MBUS_LOG=""
 MBUS_PID=""
+MBUS_ESPHOME_PID=""
+MBUS_ESPHOME_LINK="/run/wmbus/esphome-mbus"
 MBUS_BUS_ALIAS="MAIN"
 MBUS_POLL_DEFAULT="15m"
 MBUS_STATUS_FILE=""
@@ -161,6 +163,65 @@ mbus_enabled() {
   jq -e '.mbus_enabled == true' "${OPTIONS_JSON}" >/dev/null 2>&1
 }
 
+mbus_transport() {
+  mbus_opt mbus_transport "serial"
+}
+
+start_esphome_pty() {
+  local transport host port key proxy
+  transport="$(mbus_transport)"
+  [[ "${transport}" == "esphome" ]] || return 0
+
+  host="$(mbus_opt mbus_esphome_host "")"
+  port="$(mbus_opt mbus_esphome_port "6053")"
+  key="$(mbus_opt mbus_esphome_key "")"
+  proxy="$(mbus_opt mbus_esphome_proxy "M-Bus Master")"
+
+  [[ -n "${host}" && "${host}" != "null" ]] || {
+    err "M-Bus: mbus_transport=esphome but mbus_esphome_host is empty"
+    return 1
+  }
+  [[ -n "${key}" && "${key}" != "null" ]] || {
+    err "M-Bus: mbus_transport=esphome but mbus_esphome_key is empty"
+    return 1
+  }
+
+  mkdir -p /run/wmbus
+  rm -f "${MBUS_ESPHOME_LINK}"
+
+  /usr/bin/python3 /usr/bin/esphome_pty.py \
+    --host "${host}" \
+    --port "${port}" \
+    --key "${key}" \
+    --proxy "${proxy}" \
+    --link "${MBUS_ESPHOME_LINK}" \
+    >"${MBUS_BASE}/esphome-pty.log" 2>&1 &
+
+  MBUS_ESPHOME_PID=$!
+
+  for _ in $(seq 1 100); do
+    [[ -e "${MBUS_ESPHOME_LINK}" ]] && return 0
+    kill -0 "${MBUS_ESPHOME_PID}" 2>/dev/null || {
+      err "M-Bus: ESPHome PTY bridge exited during startup"
+      cat "${MBUS_BASE}/esphome-pty.log" >&2 || true
+      MBUS_ESPHOME_PID=""
+      return 1
+    }
+    sleep 0.1
+  done
+
+  err "M-Bus: timeout waiting for ESPHome PTY"
+  return 1
+}
+
+stop_esphome_pty() {
+  [[ -z "${MBUS_ESPHOME_PID}" ]] && return 0
+  kill -TERM "${MBUS_ESPHOME_PID}" 2>/dev/null || true
+  wait "${MBUS_ESPHOME_PID}" 2>/dev/null || true
+  MBUS_ESPHOME_PID=""
+  rm -f "${MBUS_ESPHOME_LINK}"
+}
+
 # ------------------------------------------------------------
 # Identity pinning
 # ------------------------------------------------------------
@@ -196,9 +257,11 @@ mbus_identity_check() {
 # Configuration files
 # ------------------------------------------------------------
 write_mbus_conf() {
-  local dev alias bps loglevel donotprobe logtelegrams ignoredup pinned identity
+  local dev alias bps loglevel donotprobe logtelegrams ignoredup pinned identity transport
+  transport="$(mbus_transport)"
 
   dev="$(mbus_opt mbus_device "")"
+  [[ "${transport}" == "esphome" ]] && dev="${MBUS_ESPHOME_LINK}"
   alias="$(mbus_opt mbus_bus_alias "MAIN")"
   bps="$(mbus_opt mbus_baudrate "2400")"
   loglevel="$(mbus_opt mbus_loglevel "normal")"
@@ -233,27 +296,29 @@ write_mbus_conf() {
     MBUS_POLL_DEFAULT="15m"
   fi
 
-  identity="$(mbus_identity_check "${dev}" "${pinned}")"
-  case "${identity}" in
-    device_missing)
-      # /dev names are not stable across replugs, so this is the expected
-      # outcome of moving the converter to another socket, not a defect.
-      warn "M-Bus: the configured port ${dev} is gone -> not starting. Re-pick it in the M-Bus tab; serial port names change when USB devices are replugged."
-      mbus_write_status "device_missing"
-      return 1
-      ;;
-    changed)
-      # Refusing to poll is the right call: the alternative is talking M-Bus
-      # into a Zigbee coordinator or into the user's own ESP bridge.
-      err "M-Bus: ${dev} is now a different device than the one you selected -> refusing to poll. Something else took that port; re-pick the converter in the M-Bus tab to confirm."
-      status_add_event "error" "M-Bus device identity changed on ${dev}"
-      mbus_write_status "identity_changed"
-      return 1
-      ;;
-    pin_impossible)
-      log_verbose "[DIAG] M-Bus: ${dev} reports no serial number -> identity cannot be verified"
-      ;;
-  esac
+  if [[ "${transport}" != "esphome" ]]; then
+    identity="$(mbus_identity_check "${dev}" "${pinned}")"
+    case "${identity}" in
+      device_missing)
+        # /dev names are not stable across replugs, so this is the expected
+        # outcome of moving the converter to another socket, not a defect.
+        warn "M-Bus: the configured port ${dev} is gone -> not starting. Re-pick it in the M-Bus tab; serial port names change when USB devices are replugged."
+        mbus_write_status "device_missing"
+        return 1
+        ;;
+      changed)
+        # Refusing to poll is the right call: the alternative is talking M-Bus
+        # into a Zigbee coordinator or into the user's own ESP bridge.
+        err "M-Bus: ${dev} is now a different device than the one you selected -> refusing to poll. Something else took that port; re-pick the converter in the M-Bus tab to confirm."
+        status_add_event "error" "M-Bus device identity changed on ${dev}"
+        mbus_write_status "identity_changed"
+        return 1
+        ;;
+      pin_impossible)
+        log_verbose "[DIAG] M-Bus: ${dev} reports no serial number -> identity cannot be verified"
+        ;;
+    esac
+  fi
 
   mkdir -p "${MBUS_METER_DIR}"
   # if/fi, not `[[ ]] && echo`: a false test as the LAST statement makes the
@@ -449,6 +514,11 @@ start_mbus_instance() {
     mbus_write_status "disabled"
     return 0
   fi
+
+  if ! start_esphome_pty; then
+    return 0
+  fi
+
   write_mbus_conf || return 0
   refresh_mbus_meter_files
 
@@ -482,6 +552,8 @@ start_mbus_instance() {
 }
 
 stop_mbus_instance() {
+  stop_esphome_pty
+
   [[ -z "${MBUS_PID}" ]] && return 0
   log "Stopping M-Bus instance (pid=${MBUS_PID})..."
   pkill -TERM -P "${MBUS_PID}" 2>/dev/null || true

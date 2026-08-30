@@ -78,10 +78,16 @@ FROM ${BUILD_FROM} AS addon
 RUN apk add --no-cache \
   bash \
   python3 \
+  py3-pip \
   mosquitto-clients jq \
   curl \
   libstdc++ zlib libxml2 \
   libusb librtlsdr
+
+RUN python3 -m pip install \
+  --no-cache-dir \
+  --break-system-packages \
+  "aioesphomeapi==45.7.0"
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 # Build-time driver catalog consumed by the WebUI driver <datalist>.
