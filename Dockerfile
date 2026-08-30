@@ -87,7 +87,7 @@ RUN apk add --no-cache \
 RUN python3 -m pip install \
   --no-cache-dir \
   --break-system-packages \
-  "aioesphomeapi==45.7.0"
+  "aioesphomeapi==46.3.0"
 
 COPY --from=builder /out/wmbusmeters /usr/bin/wmbusmeters
 # Build-time driver catalog consumed by the WebUI driver <datalist>.
